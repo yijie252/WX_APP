@@ -1,0 +1,42 @@
+暖绒加热服微信小程序（独立工程）
+================================
+
+路径（与本仓库其它项目并列）：
+  上位机ui/暖绒加热服小程序/
+
+与「六部位加热服上位机」Web/串口工程无代码依赖，可单独用微信开发者工具打开本目录。
+
+目录说明
+--------
+  app.*                 小程序入口
+  project.config.json   工程配置（请将 appid 改为你的小程序 AppID）
+  pages/index/          MVP 首页：天气、微信运动、自适应、BLE 控制
+  services/weather.js   天气请求
+  services/werun.js     微信运动解密接口调用
+  utils/protocol.js     应用层组包/解包（与文档示例 AA0E01010101030200280401E00D 对齐）
+  utils/adaptive.js     初步自适应规则
+  config/runtime.js     小程序运行时配置（微信运动解密接口地址）
+  server/werun-server.js 微信运动最小解密服务示例
+
+后续接入 BLE 时需提供
+--------------------
+  - 设备蓝牙广播名或服务 UUID
+  - 写入用 characteristicId（及是否 writeNoResponse）
+  - 若固件对「长度字段」为两字节与本文档示例不一致，以固件为准并改 protocol.js
+
+微信运动解密
+------------
+  1. 在 server/.env.example 基础上创建 server/.env，填写 AppID / AppSecret
+  2. 启动：
+       node server/werun-server.js
+  3. 在 config/runtime.js 中填写：
+       werunDecryptUrl: 'https://你的域名/api/werun/decrypt'
+  4. 在微信公众平台后台配置 request 合法域名
+
+说明：
+  - 真机环境不能直接请求 localhost
+  - 若未配置解密接口，小程序仍可获取加密数据，但步数不会自动回填
+
+Git 仓库
+--------
+  若需单独成库：在本目录执行 git init，与上级仓库脱钩即可。

@@ -1,0 +1,144 @@
+<view class="page">
+  <view class="card">
+    <text class="title">暖绒加热 MVP</text>
+    <text class="hint">当前先打通天气、微信运动接入占位和初步自适应决策。BLE 写入保留在页面下半部分，便于后续联调。</text>
+  </view>
+
+  <view class="card">
+    <text class="label">天气</text>
+    <text class="meta">天气：{{weatherText}}</text>
+    <text class="meta">室外温度：{{outdoorTemp}}°C</text>
+    <text class="meta">体感温度：{{feelsLikeTemp}}°C</text>
+    <text class="meta">来源：{{weatherSource === 'live' ? '实时' : '模拟'}}</text>
+    <text class="meta" wx:if="{{weatherObservationTime}}">观测时间：{{weatherObservationTime}}</text>
+    <button class="btn" type="primary" bindtap="onFetchWeather" loading="{{weatherLoading}}">获取天气</button>
+  </view>
+
+  <view class="card">
+    <text class="label">微信运动</text>
+    <text class="meta">获取状态：{{weRunStatus}}</text>
+    <text class="meta">解密服务：{{weRunServerConfigured ? '已配置' : '未配置'}}</text>
+    <text class="meta">解密链路：{{weRunServerConfigured ? '已接服务端解密' : (weRunEncryptedReady ? '已拿到加密数据，待服务端解密' : '未获取')}}</text>
+    <text class="meta" wx:if="{{weRunCloudId}}">cloudID：{{weRunCloudId}}</text>
+    <text class="meta" wx:if="{{weRunLastStep}}">最近步数：{{weRunLastStep}}</text>
+    <view class="field">
+      <text class="field-label">MVP 步数输入</text>
+      <input class="input" type="number" value="{{stepCount}}" bindinput="onStepInput" placeholder="输入今日步数" />
+    </view>
+    <text class="meta">当前用于自适应的步数：{{stepCount}}（{{stepSource === 'manual' ? '手动' : '微信运动'}}）</text>
+    <button class="btn" bindtap="onFetchWeRun">{{weRunServerConfigured ? '获取并解密微信运动' : '获取微信运动加密数据'}}</button>
+  </view>
+
+  <view class="card">
+    <text class="label">初步自适应建议</text>
+    <text class="adaptive-gear">{{adaptiveGearText}}</text>
+    <text class="meta">温度分层：{{adaptiveTempBand}}</text>
+    <text class="meta">活动分层：{{adaptiveActivityBand}}</text>
+    <text class="hint">{{adaptiveSummary}}</text>
+    <view class="reason-list">
+      <text class="reason" wx:for="{{adaptiveReasons}}" wx:key="*this">{{item}}</text>
+    </view>
+    <button class="btn" type="primary" bindtap="onApplyAdaptiveNow">按建议生成控制指令</button>
+  </view>
+
+  <view class="card">
+    <text class="label">控制模式</text>
+    <view class="segmented">
+      <view
+        class="segment {{controlMode === 'auto' ? 'segment-active' : ''}}"
+        data-mode="auto"
+        bindtap="onSwitchMode"
+      >
+        自动
+      </view>
+      <view
+        class="segment {{controlMode === 'manual' ? 'segment-active' : ''}}"
+        data-mode="manual"
+        bindtap="onSwitchMode"
+      >
+        手动
+      </view>
+    </view>
+    <text class="meta">当前模式：{{controlMode === 'auto' ? '自动跟随建议' : '手动指定档位'}}</text>
+    <text class="meta">当前档位：{{currentGearText}}</text>
+    <view class="field" wx:if="{{controlMode === 'manual'}}">
+      <text class="field-label">手动档位</text>
+      <view class="actions compact-actions">
+        <button class="btn mini-btn" data-gear="0" bindtap="onSelectManualGear">关闭</button>
+        <button class="btn mini-btn" data-gear="1" bindtap="onSelectManualGear">低档</button>
+        <button class="btn mini-btn" data-gear="2" bindtap="onSelectManualGear">中档</button>
+        <button class="btn mini-btn" data-gear="3" bindtap="onSelectManualGear">高档</button>
+      </view>
+      <text class="meta">已选择：{{manualGearText}}</text>
+    </view>
+  </view>
+
+  <view class="card">
+    <text class="label">当前控制指令预览</text>
+    <text class="meta">{{packetReadyText}}</text>
+    <text class="hex" selectable="true">{{pendingPacketHex || '暂无'}}</text>
+    <button class="btn" type="primary" data-use-current="1" bindtap="onSendGear">发送当前档位指令</button>
+  </view>
+
+  <view class="card">
+    <text class="label">BLE 状态</text>
+    <text class="meta">状态：{{statusText}}</text>
+    <text class="meta" wx:if="{{connected}}">设备：{{connectedDeviceName}}</text>
+  </view>
+
+  <view class="card">
+    <text class="label">蓝牙服务</text>
+    <text class="hex" selectable="true">Service: 0000FF00-0000-1000-8000-00805F9B34FB</text>
+    <text class="hex" selectable="true">Notify: 0000FF01-0000-1000-8000-00805F9B34FB</text>
+    <text class="hex" selectable="true">Write: 0000FF02-0000-1000-8000-00805F9B34FB</text>
+  </view>
+
+  <view class="actions">
+    <button class="btn" type="primary" bindtap="onStartScan" loading="{{scanning}}">开始扫描</button>
+    <button class="btn" bindtap="onStopScan">停止扫描</button>
+    <button class="btn" bindtap="onDisconnect" disabled="{{!connected}}">断开连接</button>
+  </view>
+
+  <view class="card" wx:if="{{devices.length}}">
+    <text class="label">发现设备</text>
+    <view class="device" wx:for="{{devices}}" wx:key="deviceId">
+      <view class="device-info">
+        <text class="device-name">{{item.name}}</text>
+        <text class="device-id">{{item.deviceId}}</text>
+      </view>
+      <button
+        size="mini"
+        type="primary"
+        data-deviceid="{{item.deviceId}}"
+        data-name="{{item.name}}"
+        bindtap="onConnectDevice"
+      >
+        连接
+      </button>
+    </view>
+  </view>
+
+  <view class="card">
+    <text class="label">左袜控制（SOCK_L）</text>
+    <view class="actions">
+      <button class="btn" data-gear="0" bindtap="onSendGear">关闭</button>
+      <button class="btn" data-gear="1" bindtap="onSendGear">低档</button>
+      <button class="btn" data-gear="2" bindtap="onSendGear">中档</button>
+      <button class="btn" data-gear="3" bindtap="onSendGear">高档</button>
+    </view>
+  </view>
+
+  <view class="card">
+    <text class="label">示例包（与文档 AA0E01010101030200280401E00D）</text>
+    <text class="hex" selectable="true">{{exampleHex}}</text>
+  </view>
+
+  <view class="card">
+    <text class="label">最近发送 HEX</text>
+    <text class="hex" selectable="true">{{lastSentHex || '暂无'}}</text>
+    <text class="label gap-top">最近接收 HEX</text>
+    <text class="hex" selectable="true">{{lastReceivedHex || '暂无'}}</text>
+  </view>
+
+  <button class="btn" type="primary" bindtap="onCopyExample">复制示例 HEX</button>
+</view>
