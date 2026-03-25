@@ -32,7 +32,19 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && req.url === '/health') {
-    return json(res, 200, { ok: true, message: 'werun server ready' })
+    return json(res, 200, {
+      ok: true,
+      message: 'werun server ready',
+      configured: Boolean(APPID && SECRET),
+      config: {
+        hasAppId: Boolean(APPID),
+        hasSecret: Boolean(SECRET),
+      },
+      endpoints: {
+        decrypt: '/api/werun/decrypt',
+      },
+      serverTime: new Date().toISOString(),
+    })
   }
 
   if (req.method === 'POST' && req.url === '/api/werun/decrypt') {
@@ -69,6 +81,9 @@ const server = http.createServer(async (req, res) => {
           latestStep,
           stepInfoList,
           openid: session.openid || '',
+        },
+        meta: {
+          listSize: stepInfoList.length,
         },
       })
     } catch (error) {

@@ -18,6 +18,7 @@
     <text class="label">微信运动</text>
     <text class="meta">获取状态：{{weRunStatus}}</text>
     <text class="meta">解密服务：{{weRunServerConfigured ? '已配置' : '未配置'}}</text>
+    <text class="meta">服务健康：{{weRunServerHealthText}}</text>
     <text class="meta">解密链路：{{weRunServerConfigured ? '已接服务端解密' : (weRunEncryptedReady ? '已拿到加密数据，待服务端解密' : '未获取')}}</text>
     <text class="meta" wx:if="{{weRunCloudId}}">cloudID：{{weRunCloudId}}</text>
     <text class="meta" wx:if="{{weRunLastStep}}">最近步数：{{weRunLastStep}}</text>
@@ -26,6 +27,7 @@
       <input class="input" type="number" value="{{stepCount}}" bindinput="onStepInput" placeholder="输入今日步数" />
     </view>
     <text class="meta">当前用于自适应的步数：{{stepCount}}（{{stepSource === 'manual' ? '手动' : '微信运动'}}）</text>
+    <button class="btn" wx:if="{{weRunServerConfigured}}" bindtap="checkWeRunServerHealth">检查解密服务</button>
     <button class="btn" bindtap="onFetchWeRun">{{weRunServerConfigured ? '获取并解密微信运动' : '获取微信运动加密数据'}}</button>
   </view>
 
@@ -38,7 +40,7 @@
     <view class="reason-list">
       <text class="reason" wx:for="{{adaptiveReasons}}" wx:key="*this">{{item}}</text>
     </view>
-    <button class="btn" type="primary" bindtap="onApplyAdaptiveNow">按建议生成控制指令</button>
+    <button class="btn" type="primary" bindtap="onApplyAdaptiveNow">切回自动模式并按建议预览</button>
   </view>
 
   <view class="card">
@@ -60,6 +62,7 @@
       </view>
     </view>
     <text class="meta">当前模式：{{controlMode === 'auto' ? '自动跟随建议' : '手动指定档位'}}</text>
+    <text class="hint">{{controlModeSummary}}</text>
     <text class="meta">当前档位：{{currentGearText}}</text>
     <view class="field" wx:if="{{controlMode === 'manual'}}">
       <text class="field-label">手动档位</text>
@@ -76,6 +79,22 @@
   <view class="card">
     <text class="label">当前控制指令预览</text>
     <text class="meta">{{packetReadyText}}</text>
+    <view class="segmented">
+      <view
+        class="segment {{bleLengthMode === 'single_byte' ? 'segment-active' : ''}}"
+        data-mode="single_byte"
+        bindtap="onLengthModeChange"
+      >
+        单字节长度
+      </view>
+      <view
+        class="segment {{bleLengthMode === 'double_byte' ? 'segment-active' : ''}}"
+        data-mode="double_byte"
+        bindtap="onLengthModeChange"
+      >
+        双字节长度
+      </view>
+    </view>
     <text class="hex" selectable="true">{{pendingPacketHex || '暂无'}}</text>
     <button class="btn" type="primary" data-use-current="1" bindtap="onSendGear">发送当前档位指令</button>
   </view>
@@ -87,10 +106,32 @@
   </view>
 
   <view class="card">
-    <text class="label">蓝牙服务</text>
-    <text class="hex" selectable="true">Service: 0000FF00-0000-1000-8000-00805F9B34FB</text>
-    <text class="hex" selectable="true">Notify: 0000FF01-0000-1000-8000-00805F9B34FB</text>
-    <text class="hex" selectable="true">Write: 0000FF02-0000-1000-8000-00805F9B34FB</text>
+    <text class="label">BLE 合同确认</text>
+    <text class="meta">状态：{{bleContractStatus}}</text>
+    <text class="meta">来源：{{bleContractSource}}</text>
+    <text class="meta">首选广播前缀：{{bleNamePrefix || '未限制'}}</text>
+    <text class="hex" selectable="true">Preferred Service: {{blePreferredServiceId || '未配置'}}</text>
+    <text class="hex" selectable="true">Preferred Notify: {{blePreferredNotifyCharacteristicId || '未配置'}}</text>
+    <text class="hex" selectable="true">Preferred Write: {{blePreferredWriteCharacteristicId || '未配置'}}</text>
+    <text class="hex" selectable="true">Active Write Service: {{bleActiveWriteServiceId || '待连接后自动探测'}}</text>
+    <text class="hex" selectable="true">Active Notify Service: {{bleActiveNotifyServiceId || '待连接后自动探测'}}</text>
+    <text class="hex" selectable="true">Active Notify: {{bleActiveNotifyCharacteristicId || '未发现'}}</text>
+    <text class="hex" selectable="true">Active Write: {{bleActiveWriteCharacteristicId || '未发现'}}</text>
+    <text class="meta">写入属性：{{bleWritePropertyText}}</text>
+    <text class="meta">通知属性：{{bleNotifyPropertyText}}</text>
+  </view>
+
+  <view class="card" wx:if="{{bleServices.length}}">
+    <text class="label">已发现服务与特征</text>
+    <view class="service" wx:for="{{bleServices}}" wx:key="serviceId" wx:for-item="service">
+      <text class="service-id">{{service.serviceId}}</text>
+      <text class="meta">{{service.summary}}</text>
+      <view class="characteristic" wx:for="{{service.characteristics}}" wx:key="uuid" wx:for-item="charItem">
+        <text class="characteristic-id">{{charItem.uuid}}</text>
+        <text class="meta">{{charItem.propsText}}</text>
+        <text class="meta" wx:if="{{charItem.roleText}}">用途：{{charItem.roleText}}</text>
+      </view>
+    </view>
   </view>
 
   <view class="actions">
@@ -138,6 +179,11 @@
     <text class="hex" selectable="true">{{lastSentHex || '暂无'}}</text>
     <text class="label gap-top">最近接收 HEX</text>
     <text class="hex" selectable="true">{{lastReceivedHex || '暂无'}}</text>
+    <text class="label gap-top">最近接收解析</text>
+    <text class="hint">{{lastReceivedPacketText}}</text>
+    <text class="meta">设备上报档位：{{deviceReportedGearText}}</text>
+    <text class="meta">设备上报电源：{{deviceReportedPowerText}}</text>
+    <text class="meta">设备上报电池：{{deviceReportedBatteryText}}</text>
   </view>
 
   <button class="btn" type="primary" bindtap="onCopyExample">复制示例 HEX</button>

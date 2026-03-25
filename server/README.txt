@@ -21,7 +21,12 @@
   http://localhost:8787/health
   http://localhost:8787/api/werun/decrypt
 
+健康检查返回：
+  - configured: 是否已配置 AppID / AppSecret
+  - config.hasAppId / config.hasSecret: 便于页面直接提示服务端配置状态
+
 小程序配置：
   1. 在 `config/runtime.js` 中填写解密接口地址
-  2. 在微信公众平台后台配置 request 合法域名
-  3. 真机环境不能直接访问 localhost，需改为可访问的局域网或 HTTPS 域名
+  2. 可选填写 `werunHealthUrl`，不填时页面会尝试从解密地址自动推导 `/health`
+  3. 在微信公众平台后台配置 request 合法域名
+  4. 真机环境不能直接访问 localhost，需改为可访问的局域网或 HTTPS 域名

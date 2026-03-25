@@ -2,11 +2,11 @@
  * 暖绒设备 ↔ 小程序 BLE 应用层协议
  * （依据《设备和APP蓝牙通讯协议》与示例 AA0E01010101030200280401E00D）
  *
- * 长度字段（第 2 字节，紧跟 0xAA）：
- * - 文档写「两个字节」，示例为单字节 0x0E。
- * - 按示例：整帧总长 14 字节，第二字节 0x0E = 14 = 从首字节 AA 到末字节 0x0D 的全帧字节数。
+ * 长度字段：
+ * - 文档写「两个字节」，但示例为单字节 0x0E。
+ * - 默认按示例构包；若真机固件明确要求双字节长度，可切换到 double_byte。
  *
- * 帧布局（总长 14）：
+ * 单字节长度模式帧布局（总长 14）：
  * [0] 0xAA
  * [1] 总长度（本帧全部字节数）
  * [2] 指令 0x01 发数据 / 0x02 同步
@@ -58,6 +58,12 @@ const LIGHT = {
   OFF: 1,
 }
 
+const LENGTH_MODE = {
+  AUTO: 'auto',
+  SINGLE_BYTE: 'single_byte',
+  DOUBLE_BYTE: 'double_byte',
+}
+
 const START = 0xaa
 const END = 0x0d
 const PAYLOAD_LEN = 11
@@ -77,6 +83,7 @@ const PAYLOAD_LEN = 11
  * @returns {ArrayBuffer}
  */
 function buildPacket(p) {
+  const lengthMode = normalizeBuildLengthMode(p.lengthMode)
   const cmd = p.command === 'sync' ? CMD.SYNC_DEVICE : CMD.SEND_DATA
   const timerMinutes = Math.max(0, Math.min(0xffff, Math.floor(Number(p.timerMinutes) || 0)))
 
@@ -93,12 +100,19 @@ function buildPacket(p) {
   payload[9] = (timerMinutes >> 8) & 0xff
   payload[10] = timerMinutes & 0xff
 
-  const totalLen = 1 + 1 + PAYLOAD_LEN + 1
+  const lengthFieldBytes = lengthMode === LENGTH_MODE.DOUBLE_BYTE ? 2 : 1
+  const payloadOffset = 1 + lengthFieldBytes
+  const totalLen = 1 + lengthFieldBytes + PAYLOAD_LEN + 1
   const out = new Uint8Array(totalLen)
   out[0] = START
-  out[1] = totalLen
-  out.set(payload, 2)
-  out[2 + PAYLOAD_LEN] = END
+  if (lengthMode === LENGTH_MODE.DOUBLE_BYTE) {
+    out[1] = (totalLen >> 8) & 0xff
+    out[2] = totalLen & 0xff
+  } else {
+    out[1] = totalLen
+  }
+  out.set(payload, payloadOffset)
+  out[payloadOffset + PAYLOAD_LEN] = END
 
   return out.buffer
 }
@@ -107,31 +121,19 @@ function buildPacket(p) {
  * @param {ArrayBuffer} buffer
  * @returns {{ raw: Uint8Array, fields: object } | null}
  */
-function parsePacket(buffer) {
+function parsePacket(buffer, options = {}) {
   const raw = new Uint8Array(buffer)
-  if (raw.length < 14) return null
-  if (raw[0] !== START || raw[raw.length - 1] !== END) return null
-  if (raw[1] !== raw.length) return null
-
-  const t = raw[9]
-  const envTempC = t > 127 ? t - 256 : t
-  const timerMinutes = (raw[11] << 8) | raw[12]
-
-  return {
-    raw,
-    fields: {
-      cmd: raw[2],
-      productType: raw[3],
-      power: raw[4],
-      front: raw[5],
-      collar: raw[6],
-      back: raw[7],
-      light: raw[8],
-      envTempC,
-      battery: raw[10],
-      timerMinutes,
-    },
+  const modes = resolveParseModes(options.lengthMode)
+  for (let i = 0; i < modes.length; i++) {
+    const parsed = parseWithLengthMode(raw, modes[i])
+    if (parsed) {
+      return {
+        raw,
+        fields: parsed,
+      }
+    }
   }
+  return null
 }
 
 function exampleQueryPacket() {
@@ -175,6 +177,50 @@ function toUnsignedByte(signed) {
   return signed < 0 ? 256 + signed : signed
 }
 
+function normalizeBuildLengthMode(mode) {
+  return mode === LENGTH_MODE.DOUBLE_BYTE ? LENGTH_MODE.DOUBLE_BYTE : LENGTH_MODE.SINGLE_BYTE
+}
+
+function resolveParseModes(mode) {
+  if (mode === LENGTH_MODE.SINGLE_BYTE || mode === LENGTH_MODE.DOUBLE_BYTE) {
+    return [mode]
+  }
+  return [LENGTH_MODE.SINGLE_BYTE, LENGTH_MODE.DOUBLE_BYTE]
+}
+
+function parseWithLengthMode(raw, lengthMode) {
+  const lengthFieldBytes = lengthMode === LENGTH_MODE.DOUBLE_BYTE ? 2 : 1
+  const payloadOffset = 1 + lengthFieldBytes
+  const minimumLength = 1 + lengthFieldBytes + PAYLOAD_LEN + 1
+
+  if (raw.length < minimumLength) return null
+  if (raw[0] !== START || raw[raw.length - 1] !== END) return null
+
+  const declaredLength =
+    lengthMode === LENGTH_MODE.DOUBLE_BYTE ? ((raw[1] << 8) | raw[2]) : raw[1]
+
+  if (declaredLength !== raw.length) return null
+
+  const t = raw[payloadOffset + 7]
+  const envTempC = t > 127 ? t - 256 : t
+  const timerMinutes = (raw[payloadOffset + 9] << 8) | raw[payloadOffset + 10]
+
+  return {
+    cmd: raw[payloadOffset],
+    productType: raw[payloadOffset + 1],
+    power: raw[payloadOffset + 2],
+    front: raw[payloadOffset + 3],
+    collar: raw[payloadOffset + 4],
+    back: raw[payloadOffset + 5],
+    light: raw[payloadOffset + 6],
+    envTempC,
+    battery: raw[payloadOffset + 8],
+    timerMinutes,
+    declaredLength,
+    lengthMode,
+  }
+}
+
 function hexToBytes(hex) {
   const a = hex.replace(/\s/g, '')
   const out = new Uint8Array(a.length / 2)
@@ -188,6 +234,7 @@ module.exports = {
   GEAR,
   POWER,
   LIGHT,
+  LENGTH_MODE,
   buildPacket,
   parsePacket,
   exampleQueryPacket,

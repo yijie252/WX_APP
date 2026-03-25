@@ -12,10 +12,10 @@
   project.config.json   工程配置（请将 appid 改为你的小程序 AppID）
   pages/index/          MVP 首页：天气、微信运动、自适应、BLE 控制
   services/weather.js   天气请求
-  services/werun.js     微信运动解密接口调用
-  utils/protocol.js     应用层组包/解包（与文档示例 AA0E01010101030200280401E00D 对齐）
+  services/werun.js     微信运动解密接口调用 + 健康检查
+  utils/protocol.js     应用层组包/解包（与文档示例 AA0E01010101030200280401E00D 对齐，支持单双字节长度）
   utils/adaptive.js     初步自适应规则
-  config/runtime.js     小程序运行时配置（微信运动解密接口地址）
+  config/runtime.js     小程序运行时配置（微信运动解密接口地址、BLE 首选 UUID、长度模式）
   server/werun-server.js 微信运动最小解密服务示例
 
 后续接入 BLE 时需提供
@@ -23,6 +23,7 @@
   - 设备蓝牙广播名或服务 UUID
   - 写入用 characteristicId（及是否 writeNoResponse）
   - 若固件对「长度字段」为两字节与本文档示例不一致，以固件为准并改 protocol.js
+  - 当前首页已支持连接后自动枚举服务/特征，并展示 write / writeNoResponse / notify / indicate 属性，方便现场核对真机合同
 
 微信运动解密
 ------------
@@ -31,11 +32,13 @@
        node server/werun-server.js
   3. 在 config/runtime.js 中填写：
        werunDecryptUrl: 'https://你的域名/api/werun/decrypt'
+       werunHealthUrl: 'https://你的域名/health' // 可选，不填则自动推导
   4. 在微信公众平台后台配置 request 合法域名
 
 说明：
   - 真机环境不能直接请求 localhost
   - 若未配置解密接口，小程序仍可获取加密数据，但步数不会自动回填
+  - 当前首页支持主动检查解密服务健康状态，便于区分“接口未配置”和“服务不可达”
 
 Git 仓库
 --------
