@@ -53,6 +53,7 @@ Page({
     weatherObservationTime: '',
     weRunStatus: '未获取',
     weRunServerConfigured: false,
+    weRunProviderText: runtime.werunProvider === 'cloud' ? '云函数' : 'HTTP 服务',
     weRunServerHealthText: '未检查',
     weRunEncryptedReady: false,
     weRunCloudId: '',
@@ -150,14 +151,15 @@ Page({
 
   async checkWeRunServerHealth() {
     if (!werunService.hasConfiguredWeRunServer()) {
-      this.setData({ weRunServerHealthText: '未配置解密服务' })
+      this.setData({ weRunServerHealthText: '未配置解密通道' })
       return
     }
 
     this.setData({ weRunServerHealthText: '检查中...' })
     try {
       const health = await werunService.pingWeRunServer()
-      const configured = health && health.configured ? '服务端已配 AppID/AppSecret' : '服务端未配 AppID/AppSecret'
+      const providerText = health && health.provider === 'cloud' ? '云函数' : '服务端'
+      const configured = health && health.configured ? `${providerText}已配 AppID/AppSecret` : `${providerText}未配 AppID/AppSecret`
       this.setData({
         weRunServerHealthText: `可达，${configured}`,
       })

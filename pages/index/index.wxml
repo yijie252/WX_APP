@@ -17,9 +17,9 @@
   <view class="card">
     <text class="label">微信运动</text>
     <text class="meta">获取状态：{{weRunStatus}}</text>
-    <text class="meta">解密服务：{{weRunServerConfigured ? '已配置' : '未配置'}}</text>
-    <text class="meta">服务健康：{{weRunServerHealthText}}</text>
-    <text class="meta">解密链路：{{weRunServerConfigured ? '已接服务端解密' : (weRunEncryptedReady ? '已拿到加密数据，待服务端解密' : '未获取')}}</text>
+    <text class="meta">解密通道：{{weRunProviderText}}（{{weRunServerConfigured ? '已配置' : '未配置'}}）</text>
+    <text class="meta">通道健康：{{weRunServerHealthText}}</text>
+    <text class="meta">解密链路：{{weRunServerConfigured ? '已接解密链路' : (weRunEncryptedReady ? '已拿到加密数据，待解密' : '未获取')}}</text>
     <text class="meta" wx:if="{{weRunCloudId}}">cloudID：{{weRunCloudId}}</text>
     <text class="meta" wx:if="{{weRunLastStep}}">最近步数：{{weRunLastStep}}</text>
     <view class="field">
@@ -27,7 +27,7 @@
       <input class="input" type="number" value="{{stepCount}}" bindinput="onStepInput" placeholder="输入今日步数" />
     </view>
     <text class="meta">当前用于自适应的步数：{{stepCount}}（{{stepSource === 'manual' ? '手动' : '微信运动'}}）</text>
-    <button class="btn" wx:if="{{weRunServerConfigured}}" bindtap="checkWeRunServerHealth">检查解密服务</button>
+    <button class="btn" wx:if="{{weRunServerConfigured}}" bindtap="checkWeRunServerHealth">检查解密通道</button>
     <button class="btn" bindtap="onFetchWeRun">{{weRunServerConfigured ? '获取并解密微信运动' : '获取微信运动加密数据'}}</button>
   </view>
 

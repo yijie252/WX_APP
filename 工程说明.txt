@@ -11,12 +11,13 @@
   app.*                 小程序入口
   project.config.json   工程配置（请将 appid 改为你的小程序 AppID）
   pages/index/          MVP 首页：天气、微信运动、自适应、BLE 控制
+  cloudfunctions/       云函数目录（当前包含微信运动解密函数）
   services/weather.js   天气请求
-  services/werun.js     微信运动解密接口调用 + 健康检查
+  services/werun.js     微信运动解密调用 + 健康检查（优先走云函数）
   utils/protocol.js     应用层组包/解包（与文档示例 AA0E01010101030200280401E00D 对齐，支持单双字节长度）
   utils/adaptive.js     初步自适应规则
-  config/runtime.js     小程序运行时配置（微信运动解密接口地址、BLE 首选 UUID、长度模式）
-  server/werun-server.js 微信运动最小解密服务示例
+  config/runtime.js     小程序运行时配置（微信运动通道、云环境、BLE 首选 UUID、长度模式）
+  server/werun-server.js 微信运动最小解密服务示例（HTTP 备用方案）
 
 后续接入 BLE 时需提供
 --------------------
@@ -27,18 +28,31 @@
 
 微信运动解密
 ------------
+  推荐方案：微信云函数
+  1. 在微信开发者工具中开通并选择云开发环境
+  2. 确认 project.config.json 中 cloudfunctionRoot 指向 cloudfunctions/
+  3. 打开 cloudfunctions/decryptWeRun/local.config.js，填写 AppID / AppSecret
+  4. 在微信开发者工具中上传并部署 cloudfunctions/decryptWeRun
+  5. config/runtime.js 默认已切到：
+       werunProvider: 'cloud'
+       werunCloudFunctionName: 'decryptWeRun'
+  6. 真机点击“检查解密通道”后应看到云函数健康状态
+
+  备用方案：本地 / 公网 HTTP 服务
   1. 在 server/.env.example 基础上创建 server/.env，填写 AppID / AppSecret
   2. 启动：
        node server/werun-server.js
-  3. 在 config/runtime.js 中填写：
+  3. 在 config/runtime.js 中切换：
+       werunProvider: 'http'
        werunDecryptUrl: 'https://你的域名/api/werun/decrypt'
        werunHealthUrl: 'https://你的域名/health' // 可选，不填则自动推导
   4. 在微信公众平台后台配置 request 合法域名
 
 说明：
-  - 真机环境不能直接请求 localhost
-  - 若未配置解密接口，小程序仍可获取加密数据，但步数不会自动回填
-  - 当前首页支持主动检查解密服务健康状态，便于区分“接口未配置”和“服务不可达”
+  - 云函数方案不依赖本机局域网地址，更适合真机调试
+  - cloudfunctions/decryptWeRun/local.config.js 已加入 git ignore，避免密钥误提交
+  - 若未配置解密通道，小程序仍可获取加密数据，但步数不会自动回填
+  - 当前首页支持主动检查解密通道健康状态，便于区分“未配置”和“不可达”
 
 Git 仓库
 --------
