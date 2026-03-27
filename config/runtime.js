@@ -5,7 +5,7 @@ module.exports = {
 
   // 可选：指定云开发环境 ID。
   // 留空时使用当前微信开发者工具选择的云环境。
-  cloudEnvId: '',
+  cloudEnvId: 'cloud1-7g8x4zkzce4775ec',
 
   // 仍保留 HTTP 配置作为备用方案；当 werunProvider 为 'http' 时启用。
   werunDecryptUrl: '',
