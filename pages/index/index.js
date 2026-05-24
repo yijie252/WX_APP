@@ -73,11 +73,11 @@ Page({
     adaptiveReasons: [],
     pendingPacketHex: '',
     packetReadyText: '未生成',
+    pendingPacketExplain: '',
+    lastSentPacketExplain: '',
+    lastReceivedPacketExplain: '',
     bleNamePrefix: BLE_DEFAULTS.namePrefix || '',
-    bleLengthMode:
-      BLE_DEFAULTS.lengthMode === protocol.LENGTH_MODE.DOUBLE_BYTE
-        ? protocol.LENGTH_MODE.DOUBLE_BYTE
-        : protocol.LENGTH_MODE.SINGLE_BYTE,
+    bleLengthMode: normalizeConfiguredLengthMode(BLE_DEFAULTS.lengthMode),
     blePreferredServiceId: normalizeBleId(BLE_DEFAULTS.preferredServiceId),
     blePreferredNotifyCharacteristicId: normalizeBleId(BLE_DEFAULTS.preferredNotifyCharacteristicId),
     blePreferredWriteCharacteristicId: normalizeBleId(BLE_DEFAULTS.preferredWriteCharacteristicId),
@@ -90,17 +90,25 @@ Page({
     bleWritePropertyText: '暂无',
     bleNotifyPropertyText: '暂无',
     bleServices: [],
+    bleLastError: '',
+    bleDebugText: '',
+    blePlatform: '',
   },
 
   onLoad() {
-    const check = protocol.assertExampleMatches()
-    if (!check.ok) {
-      console.error('protocol example mismatch', check)
+    const legacyCheck = protocol.assertExampleMatches()
+    const compactCheck = protocol.assertCompactExampleMatches()
+    if (!legacyCheck.ok) {
+      console.error('protocol legacy example mismatch', legacyCheck)
+    }
+    if (!compactCheck.ok) {
+      console.error('protocol compact example mismatch', compactCheck)
     }
 
     this.setData({
-      exampleHex: bufferToHex(protocol.exampleQueryPacket()),
+      exampleHex: bufferToHex(protocol.exampleCompactPacket()),
       weRunServerConfigured: werunService.hasConfiguredWeRunServer(),
+      blePlatform: detectBlePlatform(),
     })
     this.refreshAdaptiveSuggestion()
 
@@ -147,6 +155,17 @@ Page({
       wx.closeBLEConnection({ deviceId: this.data.connectedDeviceId })
     }
     wx.closeBluetoothAdapter()
+  },
+
+  logBleStage(message) {
+    const previous = String(this.data.bleDebugText || '')
+    const nextLine = `${formatDebugTime()} ${message}`
+    const nextLogs = previous
+      ? `${nextLine}\n${previous}`
+      : nextLine
+    this.setData({
+      bleDebugText: nextLogs,
+    })
   },
 
   async checkWeRunServerHealth() {
@@ -331,11 +350,13 @@ Page({
 
   refreshPacketPreview() {
     const currentGear = this.resolveCurrentGear()
-    const packet = this.buildSockPacket(currentGear)
+    const packet = this.buildVestPacket(currentGear)
+    const pendingPacketHex = bufferToHex(packet)
     this.setData({
       currentGear,
       currentGearText: formatGearText(currentGear),
-      pendingPacketHex: bufferToHex(packet),
+      pendingPacketHex,
+      pendingPacketExplain: formatPacketExplain(pendingPacketHex),
       packetReadyText: this.data.connected
         ? `已连接，可直接发送（${formatLengthModeText(this.data.bleLengthMode)}）`
         : `未连接，仅生成指令（${formatLengthModeText(this.data.bleLengthMode)}）`,
@@ -344,18 +365,28 @@ Page({
 
   async onStartScan() {
     try {
+      this.setData({
+        bleDebugText: '',
+      })
+      this.logBleStage('开始扫描设备')
       await promisify(wx.openBluetoothAdapter)()
+      this.logBleStage('蓝牙适配器已打开')
       await promisify(wx.startBluetoothDevicesDiscovery)({
         allowDuplicatesKey: false,
       })
+      this.logBleStage('设备扫描已启动')
       this.setData({
         scanning: true,
         statusText: '扫描中',
         devices: [],
         bleContractStatus: '等待连接后确认服务/特征',
+        bleContractSource: '将优先匹配配置中的 UUID，找不到时自动探测。',
+        bleLastError: '',
+        bleServices: [],
       })
     } catch (error) {
       console.error('start scan failed', error)
+      this.logBleStage(`扫描失败：${getErrorSummary(error)}`)
       wx.showToast({ title: '蓝牙不可用', icon: 'none' })
       this.setData({ statusText: '蓝牙不可用' })
     }
@@ -374,25 +405,57 @@ Page({
   },
 
   async onConnectDevice(e) {
-    const { deviceid, name } = e.currentTarget.dataset
+    const dataset = e && e.currentTarget && e.currentTarget.dataset
+      ? e.currentTarget.dataset
+      : {}
+    const deviceid = dataset.deviceid || ''
+    const name = dataset.name || ''
     if (!deviceid) return
+    const isIos = this.data.blePlatform === 'ios'
+    const connectSettleMs = isIos ? 2200 : 1200
+    const discoverAttempts = isIos ? 5 : 3
+    const discoverDelayMs = isIos ? 1400 : 900
 
     try {
+      this.setData({
+        statusText: '连接中',
+        bleContractStatus: '连接已发起，等待服务发现',
+        bleContractSource: '将优先匹配配置中的 UUID，找不到时自动探测。',
+        bleLastError: '',
+        bleServices: [],
+        bleDebugText: '',
+      })
+      this.logBleStage(`开始连接设备：${name || deviceid}`)
       await promisify(wx.stopBluetoothDevicesDiscovery)()
+      this.logBleStage('已停止扫描，准备建立连接')
       await promisify(wx.createBLEConnection)({ deviceId: deviceid, timeout: 10000 })
+      this.logBleStage(`BLE 连接已建立，等待服务稳定（${connectSettleMs}ms）`)
+      await sleep(connectSettleMs)
 
-      const contract = await this.discoverBleContract(deviceid)
+      const contract = await this.discoverBleContractWithRetry(deviceid, {
+        attempts: discoverAttempts,
+        delayMs: discoverDelayMs,
+      })
+      this.logBleStage(`服务发现成功：write=${contract.active.writeCharacteristicId || '无'} notify=${contract.active.notifyCharacteristicId || '无'}`)
       if (!contract.active.writeServiceId || !contract.active.writeCharacteristicId) {
         throw new Error('未发现可写 BLE 特征')
       }
 
+      let notifyWarningText = ''
       if (contract.active.notifyCharacteristicId) {
-        await promisify(wx.notifyBLECharacteristicValueChange)({
-          deviceId: deviceid,
-          serviceId: contract.active.notifyServiceId,
-          characteristicId: contract.active.notifyCharacteristicId,
-          state: true,
-        })
+        this.logBleStage('开始启用通知特征')
+        try {
+          await promisify(wx.notifyBLECharacteristicValueChange)({
+            deviceId: deviceid,
+            serviceId: contract.active.notifyServiceId,
+            characteristicId: contract.active.notifyCharacteristicId,
+            state: true,
+          })
+          this.logBleStage('通知特征启用成功')
+        } catch (notifyError) {
+          notifyWarningText = `；notify 启用失败：${getErrorSummary(notifyError)}`
+          this.logBleStage(`通知特征启用失败：${getErrorSummary(notifyError)}`)
+        }
       }
 
       this.setData({
@@ -401,8 +464,10 @@ Page({
         connectedDeviceId: deviceid,
         connectedDeviceName: name || deviceid,
         statusText: '已连接',
-        bleContractStatus: contract.statusText,
-        bleContractSource: contract.sourceText,
+        bleContractStatus: contract.statusText + notifyWarningText,
+        bleContractSource: isIos
+          ? `${contract.sourceText}；当前为 iOS 兼容模式`
+          : contract.sourceText,
         bleActiveWriteServiceId: contract.active.writeServiceId,
         bleActiveNotifyServiceId: contract.active.notifyServiceId,
         bleActiveNotifyCharacteristicId: contract.active.notifyCharacteristicId,
@@ -410,14 +475,28 @@ Page({
         bleWritePropertyText: contract.active.writePropertyText,
         bleNotifyPropertyText: contract.active.notifyPropertyText,
         bleServices: contract.services,
+        bleLastError: '',
       }, () => {
         this.refreshPacketPreview()
       })
+      this.logBleStage('连接流程完成')
       wx.showToast({ title: '连接成功', icon: 'success' })
     } catch (error) {
+      const errorDetail = formatBleError(error)
       console.error('connect failed', error)
-      wx.showToast({ title: '连接失败', icon: 'none' })
-      this.resetBleConnectionState(`连接失败：${error.message || '未知错误'}`)
+      this.logBleStage(`连接失败：${errorDetail.fullText}`)
+      try {
+        await promisify(wx.closeBLEConnection)({ deviceId: deviceid })
+      } catch (closeError) {
+        console.warn('close connection after failure failed', closeError)
+      }
+      wx.showToast({ title: errorDetail.toastText, icon: 'none' })
+      this.resetBleConnectionState(`连接失败：${errorDetail.summary}`)
+      this.setData({
+        bleContractStatus: `失败：${errorDetail.summary}`,
+        bleContractSource: errorDetail.hint,
+        bleLastError: errorDetail.fullText,
+      })
     }
   },
 
@@ -434,13 +513,16 @@ Page({
   async onSendGear(e) {
     const useCurrent = Boolean(e && e.currentTarget && e.currentTarget.dataset && e.currentTarget.dataset.useCurrent)
     const gear = useCurrent ? this.resolveCurrentGear() : Number(e.currentTarget.dataset.gear || 0)
-    const packet = this.buildSockPacket(gear)
+    const packet = this.buildVestPacket(gear)
+    const lastSentHex = bufferToHex(packet)
 
     const nextState = {
       currentGear: gear,
       currentGearText: formatGearText(gear),
-      lastSentHex: bufferToHex(packet),
-      pendingPacketHex: bufferToHex(packet),
+      lastSentHex,
+      pendingPacketHex: lastSentHex,
+      pendingPacketExplain: formatPacketExplain(lastSentHex),
+      lastSentPacketExplain: formatPacketExplain(lastSentHex),
     }
 
     if (!useCurrent) {
@@ -452,6 +534,22 @@ Page({
 
     this.setData(nextState)
 
+    await this.sendPacket(packet, '已发送')
+  },
+
+  async onSendExamplePacket() {
+    const packet = protocol.exampleCompactPacket()
+    const lastSentHex = bufferToHex(packet)
+    this.setData({
+      lastSentHex,
+      pendingPacketHex: lastSentHex,
+      pendingPacketExplain: formatPacketExplain(lastSentHex),
+      lastSentPacketExplain: formatPacketExplain(lastSentHex),
+    })
+    await this.sendPacket(packet, '真机示例包已发送')
+  },
+
+  async sendPacket(packet, successTitle) {
     if (!this.data.connectedDeviceId) {
       wx.showToast({ title: '已生成指令，尚未连接设备', icon: 'none' })
       return
@@ -470,20 +568,56 @@ Page({
         value: packet,
       })
 
-      wx.showToast({ title: '已发送', icon: 'success' })
+      wx.showToast({ title: successTitle || '已发送', icon: 'success' })
     } catch (error) {
       console.error('write failed', error)
       wx.showToast({ title: '发送失败', icon: 'none' })
     }
   },
 
+  async discoverBleContractWithRetry(deviceId, options = {}) {
+    const attempts = Number(options.attempts || 1)
+    const delayMs = Number(options.delayMs || 0)
+    let lastError = null
+
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      if (attempt > 1 && delayMs > 0) {
+        await sleep(delayMs)
+      }
+
+      try {
+        this.logBleStage(`第 ${attempt} 次服务发现开始`)
+        const contract = await this.discoverBleContract(deviceId)
+        if (!contract.active.writeServiceId || !contract.active.writeCharacteristicId) {
+          throw createBleStepError('discover', `第 ${attempt} 次服务发现未找到可写特征`)
+        }
+        if (attempt > 1) {
+          contract.statusText = `${contract.statusText}（第 ${attempt} 次发现成功）`
+        }
+        this.logBleStage(`第 ${attempt} 次服务发现成功`)
+        return contract
+      } catch (error) {
+        lastError = error
+        console.warn(`discover contract failed at attempt ${attempt}`, getErrorSummary(error))
+        this.logBleStage(`第 ${attempt} 次服务发现失败：${getErrorSummary(error)}`)
+      }
+    }
+
+    throw lastError || createBleStepError('discover', '服务发现失败')
+  },
+
   async discoverBleContract(deviceId) {
     const serviceResult = await promisify(wx.getBLEDeviceServices)({ deviceId })
-    const rawServices = Array.isArray(serviceResult.services) ? serviceResult.services : []
+    const rawServices = Array.isArray(serviceResult && serviceResult.services) ? serviceResult.services : []
+    this.logBleStage(`发现 ${rawServices.length} 个 service`)
+    if (!rawServices.length) {
+      throw createBleStepError('discover', '未发现 BLE 服务')
+    }
     const services = []
 
     for (let i = 0; i < rawServices.length; i++) {
       const service = rawServices[i]
+      if (!service || !service.uuid) continue
       const serviceId = normalizeBleId(service.uuid)
       let rawCharacteristics = []
 
@@ -492,17 +626,19 @@ Page({
           deviceId,
           serviceId,
         })
-        rawCharacteristics = Array.isArray(characteristicResult.characteristics)
+        rawCharacteristics = Array.isArray(characteristicResult && characteristicResult.characteristics)
           ? characteristicResult.characteristics
           : []
+        this.logBleStage(`Service ${shortBleId(serviceId)} 有 ${rawCharacteristics.length} 个 characteristic`)
       } catch (error) {
-        console.warn('get characteristics failed', serviceId, error)
+        console.warn(`get characteristics failed for ${serviceId}`, getErrorSummary(error))
+        this.logBleStage(`读取 ${shortBleId(serviceId)} 特征失败：${getErrorSummary(error)}`)
       }
 
       services.push({
         serviceId,
         isPrimary: Boolean(service.isPrimary),
-        characteristics: rawCharacteristics.map((item) => {
+        characteristics: rawCharacteristics.filter((item) => item && item.uuid).map((item) => {
           const properties = normalizeBleProperties(item.properties)
           return {
             uuid: normalizeBleId(item.uuid),
@@ -537,6 +673,7 @@ Page({
 
     this.setData({
       lastReceivedHex: hex,
+      lastReceivedPacketExplain: formatPacketExplain(hex),
       lastReceivedPacketText: parsed ? formatParsedPacket(parsed.fields) : '未按当前协议解析成功',
       deviceReportedGearText: parsed ? formatGearText(parsed.fields.front) : this.data.deviceReportedGearText,
       deviceReportedBatteryText: parsed ? `${parsed.fields.battery}%` : this.data.deviceReportedBatteryText,
@@ -544,17 +681,17 @@ Page({
     })
   },
 
-  buildSockPacket(gear) {
+  buildVestPacket(gear) {
     return protocol.buildPacket({
       command: 'send',
       lengthMode: this.data.bleLengthMode,
-      productType: protocol.PRODUCT.SOCK_L,
+      productType: protocol.PRODUCT.VEST,
       power: protocol.POWER.ON,
       front: gear,
-      collar: protocol.GEAR.OFF,
-      back: protocol.GEAR.OFF,
+      collar: gear,
+      back: gear,
       light: protocol.LIGHT.ON,
-      envTempC: Math.round(Number(this.data.feelsLikeTemp) || 0),
+      envTempC: 0,
       battery: 0,
       timerMinutes: 0,
     })
@@ -584,6 +721,8 @@ Page({
       bleActiveWriteCharacteristicId: '',
       bleWritePropertyText: '暂无',
       bleNotifyPropertyText: '暂无',
+      bleServices: [],
+      bleLastError: '',
     }, () => {
       this.refreshPacketPreview()
     })
@@ -593,11 +732,10 @@ Page({
 function promisify(api) {
   return (options = {}) =>
     new Promise((resolve, reject) => {
-      api({
-        ...options,
-        success: resolve,
-        fail: reject,
-      })
+      const safeOptions = options && typeof options === 'object' ? options : {}
+      safeOptions.success = resolve
+      safeOptions.fail = reject
+      api(safeOptions)
     })
 }
 
@@ -608,13 +746,19 @@ function bufferToHex(buf) {
     .join('')
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
 function upsertDevice(list, device) {
   const idx = list.findIndex((item) => item.deviceId === device.deviceId)
   if (idx === -1) {
     return list.concat(device)
   }
   const next = list.slice()
-  next[idx] = { ...next[idx], ...device }
+  const current = next[idx] && typeof next[idx] === 'object' ? next[idx] : {}
+  const incoming = device && typeof device === 'object' ? device : {}
+  next[idx] = mergePlainObjects(current, incoming)
   return next
 }
 
@@ -675,9 +819,19 @@ function chooseBleContract(services, preferences) {
     const writeCharacteristic = findCharacteristic(service.characteristics, preferredWriteCharacteristicId, hasWriteProperty)
     if (!writeCharacteristic) continue
 
-    const notifyCandidate =
-      findCharacteristic(service.characteristics, preferredNotifyCharacteristicId, hasNotifyProperty) ||
+    const notifyCharacteristic = findCharacteristic(
+      service.characteristics,
+      preferredNotifyCharacteristicId,
+      hasNotifyProperty
+    )
+    const crossServiceNotifyCandidate =
       findNotifyAcrossServices(orderedServices, preferredNotifyCharacteristicId)
+    const notifyCandidate = notifyCharacteristic
+      ? {
+          serviceId: service.serviceId,
+          characteristic: notifyCharacteristic,
+        }
+      : crossServiceNotifyCandidate
 
     return {
       writeServiceId: service.serviceId,
@@ -788,9 +942,203 @@ function formatGearText(gear) {
 }
 
 function formatLengthModeText(mode) {
-  return mode === protocol.LENGTH_MODE.DOUBLE_BYTE ? '双字节长度' : '单字节长度'
+  if (mode === protocol.LENGTH_MODE.COMPACT) return '紧凑双字节(12字节)'
+  if (mode === protocol.LENGTH_MODE.DOUBLE_BYTE) return '完整双字节(15字节)'
+  return '单字节长度(14字节)'
+}
+
+function formatPacketExplain(hex) {
+  const text = String(hex || '').replace(/\s/g, '').toLowerCase()
+  if (!text) return '暂无'
+
+  const bytes = []
+  for (let i = 0; i < text.length; i += 2) {
+    bytes.push(parseInt(text.substr(i, 2), 16))
+  }
+  if (bytes.some((item) => Number.isNaN(item))) return 'HEX 格式无效'
+
+  if (bytes.length === 12 && bytes[0] === 0xaa && bytes[11] === 0x0d) {
+    const length = (bytes[1] << 8) | bytes[2]
+    return [
+      '紧凑帧 12 字节（真机当前使用）',
+      `[0] AA 起始`,
+      `[1-2] ${toHexByte(bytes[1])} ${toHexByte(bytes[2])} 总长度=${length}`,
+      `[3] ${toHexByte(bytes[3])} 指令：${bytes[3] === 0x01 ? '发数据' : bytes[3] === 0x02 ? '同步' : '未知'}`,
+      `[4] ${toHexByte(bytes[4])} 产品：${formatProductTypeText(bytes[4])}`,
+      `[5] ${toHexByte(bytes[5])} 电源：${bytes[5] === 0 ? '开机' : '关机'}`,
+      `[6] ${toHexByte(bytes[6])} 前腹：${formatGearText(bytes[6])}`,
+      `[7] ${toHexByte(bytes[7])} 衣领：${formatGearText(bytes[7])}`,
+      `[8] ${toHexByte(bytes[8])} 后背：${formatGearText(bytes[8])}`,
+      `[9] ${toHexByte(bytes[9])} 熄灯：${bytes[9] === 0 ? '开' : '关'}`,
+      `[10] ${toHexByte(bytes[10])} 环境温度：${formatSignedTemp(bytes[10])}`,
+      `[11] 0D 结束`,
+    ].join('\n')
+  }
+
+  const parsed = protocol.parsePacket(hexStringToArrayBuffer(text), {
+    lengthMode: protocol.LENGTH_MODE.AUTO,
+  })
+  if (!parsed) return '未识别为已知协议帧'
+
+  const fields = parsed.fields
+  return [
+    `文档帧 ${fields.declaredLength} 字节`,
+    `指令：${COMMAND_TEXT[fields.cmd] || fields.cmd}`,
+    `产品：${PRODUCT_TEXT[fields.productType] || fields.productType}`,
+    `电源：${formatPowerText(fields.power)}`,
+    `前腹：${formatGearText(fields.front)} | 衣领：${formatGearText(fields.collar)} | 后背：${formatGearText(fields.back)}`,
+    `熄灯：${fields.light === protocol.LIGHT.ON ? '开' : '关'}`,
+    `环境温度：${fields.envTempC}°C | 电池：${fields.battery}% | 定时：${fields.timerMinutes} 分钟`,
+  ].join('\n')
+}
+
+function hexStringToArrayBuffer(hex) {
+  const text = String(hex || '').replace(/\s/g, '')
+  const out = new Uint8Array(text.length / 2)
+  for (let i = 0; i < out.length; i++) {
+    out[i] = parseInt(text.substr(i * 2, 2), 16)
+  }
+  return out.buffer
+}
+
+function toHexByte(value) {
+  return value.toString(16).padStart(2, '0').toUpperCase()
+}
+
+function formatProductTypeText(productType) {
+  return PRODUCT_TEXT[productType] || `未知(${productType})`
+}
+
+function formatSignedTemp(value) {
+  const temp = value > 127 ? value - 256 : value
+  return `${temp}°C`
+}
+
+function normalizeConfiguredLengthMode(mode) {
+  const text = String(mode || '').trim()
+  if (text === protocol.LENGTH_MODE.COMPACT) return protocol.LENGTH_MODE.COMPACT
+  if (text === protocol.LENGTH_MODE.DOUBLE_BYTE) return protocol.LENGTH_MODE.DOUBLE_BYTE
+  if (text === protocol.LENGTH_MODE.SINGLE_BYTE) return protocol.LENGTH_MODE.SINGLE_BYTE
+  return protocol.LENGTH_MODE.COMPACT
 }
 
 function formatPowerText(power) {
   return power === protocol.POWER.ON ? '开机' : '关机'
+}
+
+function createBleStepError(step, message, rawError) {
+  const error = rawError instanceof Error ? rawError : new Error(message)
+  error.bleStep = step
+  if (message) {
+    error.message = message
+  }
+  return error
+}
+
+function formatBleError(error) {
+  const errCode = error && typeof error.errCode !== 'undefined'
+    ? error.errCode
+    : error && typeof error.code !== 'undefined'
+      ? error.code
+      : ''
+  const errMsg = String(
+    (error && (error.errMsg || error.message)) || '未知错误'
+  ).trim()
+  const step = error && error.bleStep ? error.bleStep : ''
+  const stepText = step === 'discover'
+    ? '服务发现阶段'
+    : step === 'notify'
+      ? '通知订阅阶段'
+      : step === 'write'
+        ? '写入阶段'
+        : step === 'connect'
+          ? '建立连接阶段'
+          : '连接阶段'
+  const summary = errCode !== '' ? `${stepText}，错误码 ${errCode}` : `${stepText}，${errMsg}`
+  const fullText = errCode !== '' ? `${summary}，${errMsg}` : summary
+  const hint = buildBleErrorHint(errCode, step)
+  const toastText = errCode !== '' ? `连接失败(${errCode})` : '连接失败'
+
+  return {
+    summary,
+    fullText,
+    hint,
+    toastText,
+  }
+}
+
+function buildBleErrorHint(errCode, step) {
+  if (String(errCode) === '10004') {
+    return '已连上设备但未发现服务，常见于连接后发现过快或固件未正确暴露 service。'
+  }
+  if (String(errCode) === '10005') {
+    return '已发现 service，但特征读取失败，请核对 characteristic UUID 和设备权限。'
+  }
+  if (String(errCode) === '10006') {
+    return '当前连接已断开，检查设备是否被其他 APP 占用、是否自动休眠或距离过远。'
+  }
+  if (String(errCode) === '10012') {
+    return '连接超时，建议重启设备蓝牙并重试，必要时缩短连接距离。'
+  }
+  if (String(errCode) === '10013') {
+    return '连接参数无效，通常是 deviceId 已过期或 service/characteristic UUID 不匹配。'
+  }
+  if (step === 'discover') {
+    return '连接已建立，但服务发现未成功；可以重点检查设备真实 UUID，或增加连接后等待时间。'
+  }
+  return '请结合 BLE 状态、已发现服务与特征、以及设备是否被其他 APP 占用一起排查。'
+}
+
+function getErrorSummary(error) {
+  if (!error) return 'unknown error'
+  if (typeof error === 'string') return error
+  const errCode = typeof error.errCode !== 'undefined'
+    ? error.errCode
+    : typeof error.code !== 'undefined'
+      ? error.code
+      : ''
+  const errMsg = (error.errMsg || error.message || 'unknown error')
+  return errCode !== '' ? `${errMsg} (${errCode})` : String(errMsg)
+}
+
+function formatDebugTime() {
+  const now = new Date()
+  const hh = String(now.getHours()).padStart(2, '0')
+  const mm = String(now.getMinutes()).padStart(2, '0')
+  const ss = String(now.getSeconds()).padStart(2, '0')
+  return `${hh}:${mm}:${ss}`
+}
+
+function shortBleId(id) {
+  const text = String(id || '').toUpperCase()
+  return text.length > 8 ? text.slice(0, 8) : text
+}
+
+function detectBlePlatform() {
+  try {
+    const info = wx.getSystemInfoSync ? wx.getSystemInfoSync() : {}
+    const platform = String((info && info.platform) || '').toLowerCase()
+    if (platform === 'ios' || platform === 'android') {
+      return platform
+    }
+  } catch (error) {
+    console.warn('detect platform failed', getErrorSummary(error))
+  }
+  return ''
+}
+
+function mergePlainObjects(base, patch) {
+  const target = {}
+  const baseKeys = Object.keys(base || {})
+  const patchKeys = Object.keys(patch || {})
+
+  for (let i = 0; i < baseKeys.length; i++) {
+    const key = baseKeys[i]
+    target[key] = base[key]
+  }
+  for (let i = 0; i < patchKeys.length; i++) {
+    const key = patchKeys[i]
+    target[key] = patch[key]
+  }
+  return target
 }

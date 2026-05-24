@@ -82,6 +82,19 @@
   display: block;
 }
 
+.packet-explain {
+  font-family: monospace;
+  font-size: 22rpx;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
+  display: block;
+  color: #333;
+  background: #f6f8fa;
+  padding: 16rpx;
+  border-radius: 8rpx;
+}
+
 .actions {
   display: flex;
   flex-wrap: wrap;

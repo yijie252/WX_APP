@@ -19,6 +19,7 @@ module.exports = {
     preferredServiceId: '0000FF00-0000-1000-8000-00805F9B34FB',
     preferredNotifyCharacteristicId: '0000FF01-0000-1000-8000-00805F9B34FB',
     preferredWriteCharacteristicId: '0000FF02-0000-1000-8000-00805F9B34FB',
-    lengthMode: 'single_byte',
+  // compact = 真机 12 字节帧（AA 00 0C ... 0D）；single_byte = 文档 14 字节示例
+    lengthMode: 'compact',
   },
 }

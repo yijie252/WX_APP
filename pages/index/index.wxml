@@ -81,28 +81,32 @@
     <text class="meta">{{packetReadyText}}</text>
     <view class="segmented">
       <view
+        class="segment {{bleLengthMode === 'compact' ? 'segment-active' : ''}}"
+        data-mode="compact"
+        bindtap="onLengthModeChange"
+      >
+        紧凑12字节
+      </view>
+      <view
         class="segment {{bleLengthMode === 'single_byte' ? 'segment-active' : ''}}"
         data-mode="single_byte"
         bindtap="onLengthModeChange"
       >
-        单字节长度
-      </view>
-      <view
-        class="segment {{bleLengthMode === 'double_byte' ? 'segment-active' : ''}}"
-        data-mode="double_byte"
-        bindtap="onLengthModeChange"
-      >
-        双字节长度
+        文档14字节
       </view>
     </view>
     <text class="hex" selectable="true">{{pendingPacketHex || '暂无'}}</text>
+    <text class="label gap-top">待发指令说明</text>
+    <text class="packet-explain" selectable="true">{{pendingPacketExplain || '暂无'}}</text>
     <button class="btn" type="primary" data-use-current="1" bindtap="onSendGear">发送当前档位指令</button>
+    <button class="btn" bindtap="onSendExamplePacket">发送真机示例包</button>
   </view>
 
   <view class="card">
     <text class="label">BLE 状态</text>
     <text class="meta">状态：{{statusText}}</text>
     <text class="meta" wx:if="{{connected}}">设备：{{connectedDeviceName}}</text>
+    <text class="meta" wx:if="{{bleLastError}}">最近错误：{{bleLastError}}</text>
   </view>
 
   <view class="card">
@@ -119,6 +123,11 @@
     <text class="hex" selectable="true">Active Write: {{bleActiveWriteCharacteristicId || '未发现'}}</text>
     <text class="meta">写入属性：{{bleWritePropertyText}}</text>
     <text class="meta">通知属性：{{bleNotifyPropertyText}}</text>
+  </view>
+
+  <view class="card" wx:if="{{bleDebugText}}">
+    <text class="label">BLE 调试日志</text>
+    <text class="meta" selectable="true">{{bleDebugText}}</text>
   </view>
 
   <view class="card" wx:if="{{bleServices.length}}">
@@ -160,9 +169,10 @@
   </view>
 
   <view class="card">
-    <text class="label">左袜控制（SOCK_L）</text>
+    <text class="label">马甲档位（VEST，三区同步）</text>
+    <text class="meta">固定 power=0（开机），仅调整前腹/衣领/后背档位</text>
     <view class="actions">
-      <button class="btn" data-gear="0" bindtap="onSendGear">关闭</button>
+      <button class="btn" data-gear="0" bindtap="onSendGear">全关</button>
       <button class="btn" data-gear="1" bindtap="onSendGear">低档</button>
       <button class="btn" data-gear="2" bindtap="onSendGear">中档</button>
       <button class="btn" data-gear="3" bindtap="onSendGear">高档</button>
@@ -170,15 +180,35 @@
   </view>
 
   <view class="card">
-    <text class="label">示例包（与文档 AA0E01010101030200280401E00D）</text>
+    <text class="label">真机示例包（AA000C01010003030000000D）</text>
     <text class="hex" selectable="true">{{exampleHex}}</text>
+  </view>
+
+  <view class="card">
+    <text class="label">通讯包说明</text>
+    <text class="hint">真机当前使用紧凑 12 字节帧，示例：AA 00 0C 01 01 00 03 03 00 00 00 0D</text>
+    <text class="meta">[0] AA 起始</text>
+    <text class="meta">[1-2] 双字节总长度（含头尾，当前为 0x000C=12）</text>
+    <text class="meta">[3] 指令：01 发数据 / 02 同步</text>
+    <text class="meta">[4] 产品：01 背心 VEST</text>
+    <text class="meta">[5] 电源：0 开机 / 1 关机（当前固定发 0）</text>
+    <text class="meta">[6] 前腹档位：0 关 / 1 低 / 2 中 / 3 高</text>
+    <text class="meta">[7] 衣领档位：0 关 / 1 低 / 2 中 / 3 高</text>
+    <text class="meta">[8] 后背档位：0 关 / 1 低 / 2 中 / 3 高</text>
+    <text class="meta">[9] 熄灯：0 开 / 1 关</text>
+    <text class="meta">[10] 环境温度（有符号 byte）</text>
+    <text class="meta">[11] 0D 结束</text>
   </view>
 
   <view class="card">
     <text class="label">最近发送 HEX</text>
     <text class="hex" selectable="true">{{lastSentHex || '暂无'}}</text>
+    <text class="label gap-top">最近发送说明</text>
+    <text class="packet-explain" selectable="true">{{lastSentPacketExplain || '暂无'}}</text>
     <text class="label gap-top">最近接收 HEX</text>
     <text class="hex" selectable="true">{{lastReceivedHex || '暂无'}}</text>
+    <text class="label gap-top">最近接收说明</text>
+    <text class="packet-explain" selectable="true">{{lastReceivedPacketExplain || '暂无'}}</text>
     <text class="label gap-top">最近接收解析</text>
     <text class="hint">{{lastReceivedPacketText}}</text>
     <text class="meta">设备上报档位：{{deviceReportedGearText}}</text>

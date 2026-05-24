@@ -105,10 +105,7 @@ function callWeRunCloudFunction(input) {
 
   return wx.cloud.callFunction({
     name: functionName,
-    data: {
-      action: input.action,
-      ...(input.payload || {}),
-    },
+    data: buildCloudFunctionPayload(input),
   }).then((res) => {
     const result = res && res.result ? res.result : {}
     if (!result || result.ok !== true) {
@@ -116,6 +113,20 @@ function callWeRunCloudFunction(input) {
     }
     return result.data || {}
   })
+}
+
+function buildCloudFunctionPayload(input) {
+  const payload = input && input.payload && typeof input.payload === 'object'
+    ? input.payload
+    : {}
+  const data = {
+    action: input.action,
+  }
+  const keys = Object.keys(payload)
+  for (let i = 0; i < keys.length; i++) {
+    data[keys[i]] = payload[keys[i]]
+  }
+  return data
 }
 
 function normalizeDecryptedPayload(data) {

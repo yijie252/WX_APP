@@ -1,25 +1,14 @@
 /**
  * 暖绒设备 ↔ 小程序 BLE 应用层协议
- * （依据《设备和APP蓝牙通讯协议》与示例 AA0E01010101030200280401E00D）
  *
- * 长度字段：
- * - 文档写「两个字节」，但示例为单字节 0x0E。
- * - 默认按示例构包；若真机固件明确要求双字节长度，可切换到 double_byte。
+ * 真机实测帧（12 字节，优先使用）：
+ *   AA 00 0C 01 01 00 03 03 00 00 00 0D
+ *   - 双字节长度 0x000C（含头尾）
+ *   - 载荷 8 字节：指令/产品/电源/前腹/衣领/后背/熄灯/环境温度
+ *   - 不含电池、定时字段
  *
- * 单字节长度模式帧布局（总长 14）：
- * [0] 0xAA
- * [1] 总长度（本帧全部字节数）
- * [2] 指令 0x01 发数据 / 0x02 同步
- * [3] 产品类型
- * [4] 开关机 0开 1关
- * [5] 前腹档位（袜子左脚，文档补充）
- * [6] 衣领档位（袜子右脚）
- * [7] 后背档位
- * [8] 熄灯 0开 1关
- * [9] 环境温度 有符号
- * [10] 电池
- * [11..12] 定时分钟 大端 uint16
- * [13] 0x0D
+ * 文档示例帧（14 字节，legacy）：
+ *   AA 0E 01 01 01 01 03 02 00 28 04 01 E0 0D
  */
 
 /** @typedef {'send'|'sync'} CommandKind */
@@ -60,17 +49,21 @@ const LIGHT = {
 
 const LENGTH_MODE = {
   AUTO: 'auto',
+  COMPACT: 'compact',
   SINGLE_BYTE: 'single_byte',
   DOUBLE_BYTE: 'double_byte',
 }
 
 const START = 0xaa
 const END = 0x0d
-const PAYLOAD_LEN = 11
+const FULL_PAYLOAD_LEN = 11
+const COMPACT_PAYLOAD_LEN = 8
+const COMPACT_FRAME_LEN = 12
 
 /**
  * @param {object} p
  * @param {CommandKind} [p.command='send']
+ * @param {string} [p.lengthMode='compact']
  * @param {number} p.productType
  * @param {number} p.power
  * @param {number} p.front
@@ -78,16 +71,44 @@ const PAYLOAD_LEN = 11
  * @param {number} p.back
  * @param {number} p.light
  * @param {number} p.envTempC
- * @param {number} p.battery
+ * @param {number} [p.battery=0]
  * @param {number} [p.timerMinutes=0]
  * @returns {ArrayBuffer}
  */
 function buildPacket(p) {
   const lengthMode = normalizeBuildLengthMode(p.lengthMode)
+  if (lengthMode === LENGTH_MODE.COMPACT) {
+    return buildCompactPacket(p)
+  }
+  return buildFullPacket(p, lengthMode)
+}
+
+function buildCompactPacket(p) {
+  const cmd = p.command === 'sync' ? CMD.SYNC_DEVICE : CMD.SEND_DATA
+  const payload = new Uint8Array(COMPACT_PAYLOAD_LEN)
+  payload[0] = u8(cmd)
+  payload[1] = u8(p.productType)
+  payload[2] = u8(p.power)
+  payload[3] = u8(p.front)
+  payload[4] = u8(p.collar)
+  payload[5] = u8(p.back)
+  payload[6] = u8(p.light)
+  payload[7] = toUnsignedByte(clampSignedInt8(p.envTempC))
+
+  const out = new Uint8Array(COMPACT_FRAME_LEN)
+  out[0] = START
+  out[1] = (COMPACT_FRAME_LEN >> 8) & 0xff
+  out[2] = COMPACT_FRAME_LEN & 0xff
+  out.set(payload, 3)
+  out[COMPACT_FRAME_LEN - 1] = END
+  return out.buffer
+}
+
+function buildFullPacket(p, lengthMode) {
   const cmd = p.command === 'sync' ? CMD.SYNC_DEVICE : CMD.SEND_DATA
   const timerMinutes = Math.max(0, Math.min(0xffff, Math.floor(Number(p.timerMinutes) || 0)))
 
-  const payload = new Uint8Array(PAYLOAD_LEN)
+  const payload = new Uint8Array(FULL_PAYLOAD_LEN)
   payload[0] = u8(cmd)
   payload[1] = u8(p.productType)
   payload[2] = u8(p.power)
@@ -102,7 +123,7 @@ function buildPacket(p) {
 
   const lengthFieldBytes = lengthMode === LENGTH_MODE.DOUBLE_BYTE ? 2 : 1
   const payloadOffset = 1 + lengthFieldBytes
-  const totalLen = 1 + lengthFieldBytes + PAYLOAD_LEN + 1
+  const totalLen = 1 + lengthFieldBytes + FULL_PAYLOAD_LEN + 1
   const out = new Uint8Array(totalLen)
   out[0] = START
   if (lengthMode === LENGTH_MODE.DOUBLE_BYTE) {
@@ -112,7 +133,7 @@ function buildPacket(p) {
     out[1] = totalLen
   }
   out.set(payload, payloadOffset)
-  out[payloadOffset + PAYLOAD_LEN] = END
+  out[payloadOffset + FULL_PAYLOAD_LEN] = END
 
   return out.buffer
 }
@@ -139,6 +160,7 @@ function parsePacket(buffer, options = {}) {
 function exampleQueryPacket() {
   return buildPacket({
     command: 'send',
+    lengthMode: LENGTH_MODE.SINGLE_BYTE,
     productType: PRODUCT.VEST,
     power: POWER.OFF,
     front: GEAR.LOW,
@@ -151,10 +173,35 @@ function exampleQueryPacket() {
   })
 }
 
+function exampleCompactPacket() {
+  return buildPacket({
+    command: 'send',
+    lengthMode: LENGTH_MODE.COMPACT,
+    productType: PRODUCT.VEST,
+    power: POWER.ON,
+    front: GEAR.HIGH,
+    collar: GEAR.HIGH,
+    back: GEAR.OFF,
+    light: LIGHT.ON,
+    envTempC: 0,
+  })
+}
+
 function assertExampleMatches() {
   const hex = 'aa0e01010101030200280401e00d'
   const expected = hexToBytes(hex)
   const actual = new Uint8Array(exampleQueryPacket())
+  if (expected.length !== actual.length) return { ok: false, reason: 'length' }
+  for (let i = 0; i < expected.length; i++) {
+    if (expected[i] !== actual[i]) return { ok: false, reason: `byte ${i}`, expected, actual }
+  }
+  return { ok: true }
+}
+
+function assertCompactExampleMatches() {
+  const hex = 'aa000c01010003030000000d'
+  const expected = hexToBytes(hex)
+  const actual = new Uint8Array(exampleCompactPacket())
   if (expected.length !== actual.length) return { ok: false, reason: 'length' }
   for (let i = 0; i < expected.length; i++) {
     if (expected[i] !== actual[i]) return { ok: false, reason: `byte ${i}`, expected, actual }
@@ -178,20 +225,57 @@ function toUnsignedByte(signed) {
 }
 
 function normalizeBuildLengthMode(mode) {
-  return mode === LENGTH_MODE.DOUBLE_BYTE ? LENGTH_MODE.DOUBLE_BYTE : LENGTH_MODE.SINGLE_BYTE
+  if (mode === LENGTH_MODE.COMPACT) return LENGTH_MODE.COMPACT
+  if (mode === LENGTH_MODE.DOUBLE_BYTE) return LENGTH_MODE.DOUBLE_BYTE
+  if (mode === LENGTH_MODE.SINGLE_BYTE) return LENGTH_MODE.SINGLE_BYTE
+  return LENGTH_MODE.COMPACT
 }
 
 function resolveParseModes(mode) {
-  if (mode === LENGTH_MODE.SINGLE_BYTE || mode === LENGTH_MODE.DOUBLE_BYTE) {
-    return [mode]
-  }
-  return [LENGTH_MODE.SINGLE_BYTE, LENGTH_MODE.DOUBLE_BYTE]
+  if (mode === LENGTH_MODE.COMPACT) return [LENGTH_MODE.COMPACT]
+  if (mode === LENGTH_MODE.SINGLE_BYTE) return [LENGTH_MODE.SINGLE_BYTE]
+  if (mode === LENGTH_MODE.DOUBLE_BYTE) return [LENGTH_MODE.DOUBLE_BYTE]
+  return [LENGTH_MODE.COMPACT, LENGTH_MODE.SINGLE_BYTE, LENGTH_MODE.DOUBLE_BYTE]
 }
 
 function parseWithLengthMode(raw, lengthMode) {
+  if (lengthMode === LENGTH_MODE.COMPACT) {
+    return parseCompactPacket(raw)
+  }
+  return parseFullPacket(raw, lengthMode)
+}
+
+function parseCompactPacket(raw) {
+  if (raw.length !== COMPACT_FRAME_LEN) return null
+  if (raw[0] !== START || raw[raw.length - 1] !== END) return null
+
+  const declaredLength = (raw[1] << 8) | raw[2]
+  if (declaredLength !== COMPACT_FRAME_LEN) return null
+
+  const payloadOffset = 3
+  const t = raw[payloadOffset + 7]
+  const envTempC = t > 127 ? t - 256 : t
+
+  return {
+    cmd: raw[payloadOffset],
+    productType: raw[payloadOffset + 1],
+    power: raw[payloadOffset + 2],
+    front: raw[payloadOffset + 3],
+    collar: raw[payloadOffset + 4],
+    back: raw[payloadOffset + 5],
+    light: raw[payloadOffset + 6],
+    envTempC,
+    battery: 0,
+    timerMinutes: 0,
+    declaredLength,
+    lengthMode: LENGTH_MODE.COMPACT,
+  }
+}
+
+function parseFullPacket(raw, lengthMode) {
   const lengthFieldBytes = lengthMode === LENGTH_MODE.DOUBLE_BYTE ? 2 : 1
   const payloadOffset = 1 + lengthFieldBytes
-  const minimumLength = 1 + lengthFieldBytes + PAYLOAD_LEN + 1
+  const minimumLength = 1 + lengthFieldBytes + FULL_PAYLOAD_LEN + 1
 
   if (raw.length < minimumLength) return null
   if (raw[0] !== START || raw[raw.length - 1] !== END) return null
@@ -238,5 +322,7 @@ module.exports = {
   buildPacket,
   parsePacket,
   exampleQueryPacket,
+  exampleCompactPacket,
   assertExampleMatches,
+  assertCompactExampleMatches,
 }
